@@ -49,18 +49,13 @@ const ChatLayout = () => {
   }, [session]);
 
   useEffect(() => {
-  // 1. Перевірка підключення
   socket.on('connect', () => {
-    console.log('✅ SOCKET CONNECTED! ID:', socket.id);
   });
 
   socket.on('connect_error', (err) => {
-    console.error('❌ SOCKET CONNECTION ERROR:', err.message);
   });
 
-  // 2. Лог на нове повідомлення
   const handleNewMsg = (msg: Message) => {
-    console.log('📩 ОТРИМАНО ПОВІДОМЛЕННЯ ЧЕРЕЗ СОКЕТ:', msg);
     setChats((prev) =>
       prev.map((c) => {
         if (c.id === msg.chatId) {
@@ -72,9 +67,7 @@ const ChatLayout = () => {
     );
   };
 
-  // 3. Лог на крапочки (typing)
   const handleTyping = (data: { chatId: string; isTyping: boolean }) => {
-    console.log('✍️ СТАТУС ДРУКУ:', data);
     if (data.chatId === activeChatId) setIsTyping(data.isTyping);
   };
 
