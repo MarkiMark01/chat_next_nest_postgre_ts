@@ -23,7 +23,11 @@ const ChatLayout = () => {
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [chatToDelete, setChatToDelete] = useState<{ id: string; title: string } | null>(null);
 
-  const socket = useMemo(() => io('http://localhost:3001'), []);
+  const socket = useMemo(() => io('http://localhost:3001', {
+  transports: ['polling', 'websocket'],
+  reconnectionAttempts: 5,
+  withCredentials: true,
+}), []);
 
   useEffect(() => {
     const userId = (session?.user as any)?.id;
@@ -45,30 +49,45 @@ const ChatLayout = () => {
   }, [session]);
 
   useEffect(() => {
-    const handleNewMsg = (msg: Message) => {
-      setChats((prev) =>
-        prev.map((c) => {
-          if (c.id === msg.chatId) {
-            const exists = c.messages?.some((m) => m.id === msg.id);
-            return exists ? c : { ...c, messages: [...(c.messages || []), msg] };
-          }
-          return c;
-        })
-      );
-    };
+  // 1. Перевірка підключення
+  socket.on('connect', () => {
+    console.log('✅ SOCKET CONNECTED! ID:', socket.id);
+  });
 
-    const handleTyping = (data: { chatId: string; isTyping: boolean }) => {
-      if (data.chatId === activeChatId) setIsTyping(data.isTyping);
-    };
+  socket.on('connect_error', (err) => {
+    console.error('❌ SOCKET CONNECTION ERROR:', err.message);
+  });
 
-    socket.on('receiveMessage', handleNewMsg);
-    socket.on('typingStatus', handleTyping);
+  // 2. Лог на нове повідомлення
+  const handleNewMsg = (msg: Message) => {
+    console.log('📩 ОТРИМАНО ПОВІДОМЛЕННЯ ЧЕРЕЗ СОКЕТ:', msg);
+    setChats((prev) =>
+      prev.map((c) => {
+        if (c.id === msg.chatId) {
+          const exists = c.messages?.some((m) => m.id === msg.id);
+          return exists ? c : { ...c, messages: [...(c.messages || []), msg] };
+        }
+        return c;
+      })
+    );
+  };
 
-    return () => {
-      socket.off('receiveMessage');
-      socket.off('typingStatus');
-    };
-  }, [activeChatId, socket]);
+  // 3. Лог на крапочки (typing)
+  const handleTyping = (data: { chatId: string; isTyping: boolean }) => {
+    console.log('✍️ СТАТУС ДРУКУ:', data);
+    if (data.chatId === activeChatId) setIsTyping(data.isTyping);
+  };
+
+  socket.on('receiveMessage', handleNewMsg);
+  socket.on('typingStatus', handleTyping);
+
+  return () => {
+    socket.off('connect');
+    socket.off('connect_error');
+    socket.off('receiveMessage');
+    socket.off('typingStatus');
+  };
+}, [activeChatId, socket]);
 
   const sendMessage = async (text: string) => {
     const userId = (session?.user as any)?.id;
