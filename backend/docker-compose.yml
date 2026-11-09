@@ -1,36 +1,39 @@
-version: "3.9"
-
 services:
   db:
-    image: postgres:15
-    container_name: chat-db
-    restart: always
+    image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: chat_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - chat_postgres_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d chat_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-  nest-api:
+  backend:
     build:
       context: .
-      target: dev 
-    container_name: chat-api
-    restart: on-failure
-    env_file: .env
-    depends_on:
-      - db
+      target: dev
     ports:
       - "3001:3001"
+    env_file:
+      - ./.env
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/chat_db?schema=public
+      TSC_WATCHFILE: PriorityPollingInterval
+    depends_on:
+      db:
+        condition: service_healthy
     volumes:
-      - ./:/app     
-      - /app/node_modules 
-    command: sh -c "npx prisma generate && npx prisma migrate deploy && npm run start:dev"
+      - .:/app
+      - /app/node_modules
 
 volumes:
-  chat_postgres_data:
-
+  pgdata:
 

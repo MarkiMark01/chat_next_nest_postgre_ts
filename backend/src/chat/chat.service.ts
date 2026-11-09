@@ -1,7 +1,17 @@
-import { Injectable, InternalServerErrorException, NotFoundException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  InternalServerErrorException,
+  NotFoundException,
+  HttpException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma.service';
 import { ChatGateway } from './chat.gateway';
 import OpenAI from 'openai';
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 @Injectable()
 export class ChatService {
@@ -15,7 +25,7 @@ export class ChatService {
     if (!process.env.GROQ_API_KEY) {
       this.logger.warn('GROQ_API_KEY is missing in .env file');
     }
-    
+
     this.groq = new OpenAI({
       apiKey: process.env.GROQ_API_KEY || 'dummy_key',
       baseURL: 'https://api.groq.com/openai/v1',
@@ -39,15 +49,19 @@ export class ChatService {
       }
 
       return await this.prisma.chat.create({
-        data: { 
-          userId: parsedUserId, 
-          title: title || 'New Chat' 
+        data: {
+          userId: parsedUserId,
+          title: title || 'New Chat',
         },
         include: { messages: true },
       });
     } catch (error) {
+      // Не перетворюємо 404 та інші HTTP-помилки Nest на 500
+      if (error instanceof HttpException) {
+        throw error;
+      }
       this.logger.error('DATABASE ERROR:', error);
-      throw new InternalServerErrorException(error.message || 'Database error');
+      throw new InternalServerErrorException(getErrorMessage(error) || 'Database error');
     }
   }
 
@@ -58,7 +72,9 @@ export class ChatService {
       });
 
       if (role === 'user') {
-        this.generateAiResponse(chatId).catch(err => this.logger.error("AI Error:", err));
+        this.generateAiResponse(chatId).catch((err) =>
+          this.logger.error('AI Error:', getErrorMessage(err)),
+        );
       }
       return message;
     } catch (error) {
@@ -70,33 +86,39 @@ export class ChatService {
   private async generateAiResponse(chatId: string) {
     try {
       this.chatGateway.sendTypingStatus(chatId, true);
-      
-      const history = await this.prisma.message.findMany({
+
+      // Беремо 12 останніх повідомлень (desc + take), потім розвертаємо
+      // у хронологічний порядок, щоб модель бачила актуальний контекст
+      const recent = await this.prisma.message.findMany({
         where: { chatId },
-        orderBy: { createdAt: 'asc' },
-        take: 12
+        orderBy: { createdAt: 'desc' },
+        take: 12,
       });
+      const history = recent.reverse();
 
       const completion = await this.groq.chat.completions.create({
         messages: [
-          { 
-            role: 'system', 
-            content: 'You are a helpful assistant. Detect the language used by the user (Ukrainian or English) and respond in that same language. Be concise and natural.' 
+          {
+            role: 'system',
+            content:
+              'You are a helpful assistant. Detect the language used by the user (Ukrainian or English) and respond in that same language. Be concise and natural.',
           },
           ...history.map((m) => ({ role: m.role as any, content: m.content })),
         ],
-        model: 'llama-3.3-70b-versatile',
+        model: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
       });
 
-      const aiText = completion.choices[0]?.message?.content || 'Sorry, an error occurred while generating the response.';
-      
+      const aiText =
+        completion.choices[0]?.message?.content ||
+        'Sorry, an error occurred while generating the response.';
+
       const aiMessage = await this.prisma.message.create({
         data: { chatId, role: 'assistant', content: aiText },
       });
 
       this.chatGateway.sendNewMessage(aiMessage);
     } catch (error) {
-      this.logger.error('GROQ API ERROR:', error.message);
+      this.logger.error('GROQ API ERROR:', getErrorMessage(error));
     } finally {
       this.chatGateway.sendTypingStatus(chatId, false);
     }
