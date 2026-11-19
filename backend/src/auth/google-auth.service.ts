@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { OAuth2Client } from 'google-auth-library';
-import { UsersService } from '../users/users.service';
+import { randomUUID } from 'crypto';
 import * as bcrypt from 'bcryptjs';
 import type { User } from '@prisma/client';
+import { UsersService } from '../users/users.service';
 
 @Injectable()
 export class GoogleAuthService {
@@ -12,9 +13,7 @@ export class GoogleAuthService {
     this.client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
   }
 
-  async validateGoogleToken(
-    token: string,
-  ): Promise<Omit<User, 'password'> | null> {
+  async validateGoogleToken(token: string): Promise<Omit<User, 'password'> | null> {
     try {
       const ticket = await this.client.verifyIdToken({
         idToken: token,
@@ -27,13 +26,14 @@ export class GoogleAuthService {
         return null;
       }
 
-      let user = await this.usersService.findByEmail(payload.email);
+      const email = payload.email.toLowerCase();
+      let user = await this.usersService.findByEmail(email);
 
       if (!user) {
         user = await this.usersService.createUser({
-          email: payload.email,
+          email,
           name: payload.name,
-          password: await bcrypt.hash('GOOGLE_AUTH', 10),
+          password: await bcrypt.hash(randomUUID(), 10),
         });
       }
 

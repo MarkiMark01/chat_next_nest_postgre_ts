@@ -5,48 +5,44 @@ import {
   Patch,
   Body,
   Param,
-  Query,
   Delete,
-  BadRequestException
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { ChatService } from './chat.service';
-import { Message } from '@prisma/client';
+import { MyAuthGuard } from '../auth/auth.guard';
+import { AddMessageDto, CreateChatDto, RenameChatDto } from './dto/chat.dto';
 
+// MyAuthGuard кладе payload токена в req.user, id користувача лежить у sub
+type AuthRequest = { user: { sub: number } };
+
+@UseGuards(MyAuthGuard) // усі маршрути чатів тепер лише для авторизованих
 @Controller('chats')
 export class ChatController {
   constructor(private chatService: ChatService) {}
 
   @Get()
-  async getAll(@Query('userId') userId: string) {
-    const id = parseInt(userId);
-    if (isNaN(id)) return [];
-    return this.chatService.getChats(id);
+  getAll(@Req() req: AuthRequest) {
+    return this.chatService.getChats(req.user.sub); // userId з токена, а не з query
   }
 
   @Post()
-  async create(@Body() body: { userId: number; title: string }) {
-    if (!body.userId) throw new BadRequestException('User ID is required');
-    return this.chatService.createChat(body.userId, body.title);
+  create(@Req() req: AuthRequest, @Body() body: CreateChatDto) {
+    return this.chatService.createChat(req.user.sub, body.title ?? '');
   }
 
   @Post(':id/messages')
-  async addMsg(
-    @Param('id') chatId: string,
-    @Body() body: { role: string; content: string },
-  ): Promise<Message> {
-    if (!chatId || chatId === 'undefined') {
-      throw new BadRequestException('Invalid Chat ID');
-    }
-    return this.chatService.addMessage(chatId, body.role, body.content);
+  addMsg(@Req() req: AuthRequest, @Param('id') chatId: string, @Body() body: AddMessageDto) {
+    return this.chatService.addMessage(chatId, req.user.sub, body.content);
   }
 
   @Patch(':id')
-  async rename(@Param('id') id: string, @Body('title') title: string) {
-    return this.chatService.updateChatTitle(id, title);
+  rename(@Req() req: AuthRequest, @Param('id') id: string, @Body() body: RenameChatDto) {
+    return this.chatService.updateChatTitle(id, req.user.sub, body.title);
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    return this.chatService.deleteChat(id);
+  remove(@Req() req: AuthRequest, @Param('id') id: string) {
+    return this.chatService.deleteChat(id, req.user.sub);
   }
 }

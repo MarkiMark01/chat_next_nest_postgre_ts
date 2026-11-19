@@ -1,8 +1,8 @@
 'use client';
 
-import { io } from 'socket.io-client';
-import { useState, useEffect, useMemo } from 'react';
-import { useSession } from 'next-auth/react';
+import { io, Socket } from 'socket.io-client';
+import { useState, useEffect } from 'react';
+import { useSession, signOut } from 'next-auth/react';
 import toast from 'react-hot-toast';
 
 import Sidebar from '../../components/chat/Sidebar';
@@ -10,30 +10,59 @@ import ChatArea from '../../components/chat/ChatArea';
 import DeleteModal from '../../components/modal/DeleteModal';
 import { Chat, Message } from '../../types/chat';
 
-const API_URL = 'http://localhost:3001/chats';
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const API_URL = `${BASE_URL}/chats`;
 
 const ChatLayout = () => {
   const { data: session } = useSession();
-  
+  // Токен бекенду, який ми зберегли в сесії (див. [...nextauth]/route.ts)
+  const token = (session as any)?.accessToken as string | undefined;
+
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string>('');
-  const [isTyping, setIsTyping] = useState(false);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false); 
+  // Статус "друкує" зберігаємо окремо для кожного чату, щоб він не "залипав" при перемиканні
+  const [typingByChat, setTypingByChat] = useState<Record<string, boolean>>({});
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [socket, setSocket] = useState<Socket | null>(null);
 
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [chatToDelete, setChatToDelete] = useState<{ id: string; title: string } | null>(null);
 
-  const socket = useMemo(() => io('http://localhost:3001', {
-  transports: ['polling', 'websocket'],
-  reconnectionAttempts: 5,
-  withCredentials: true,
-}), []);
+  // fetch, який додає токен. Якщо токен прострочений (401), виходимо з акаунта.
+  const authFetch = async (url: string, options: RequestInit = {}) => {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+    });
+    if (res.status === 401) signOut();
+    return res;
+  };
 
+  // Підключення до сокета (з токеном), відключення при виході зі сторінки
   useEffect(() => {
-    const userId = (session?.user as any)?.id;
-    if (!userId) return;
+    if (!token) return;
 
-    fetch(`${API_URL}?userId=${userId}`)
+    const newSocket = io(BASE_URL, {
+      transports: ['polling', 'websocket'],
+      reconnectionAttempts: 5,
+      withCredentials: true,
+      auth: { token },
+    });
+    setSocket(newSocket);
+
+    return () => {
+      newSocket.disconnect();
+    };
+  }, [token]);
+
+  // Завантаження чатів. userId більше не передаємо, бекенд бере його з токена
+  useEffect(() => {
+    if (!token) return;
+
+    authFetch(API_URL)
       .then((res) => res.json())
       .then((data) => {
         const validData = Array.isArray(data) ? data : [];
@@ -46,54 +75,53 @@ const ChatLayout = () => {
         console.error('Fetch error:', err);
         toast.error('Failed to load chat history');
       });
-  }, [session]);
+  }, [token]);
 
+  // Події сокета
   useEffect(() => {
-  socket.on('connect', () => {
-  });
+    if (!socket) return;
 
-  socket.on('connect_error', (err) => {
-  });
+    const handleNewMsg = (msg: Message) => {
+      setChats((prev) =>
+        prev.map((c) => {
+          if (c.id === msg.chatId) {
+            const exists = c.messages?.some((m) => m.id === msg.id);
+            return exists ? c : { ...c, messages: [...(c.messages || []), msg] };
+          }
+          return c;
+        })
+      );
+    };
 
-  const handleNewMsg = (msg: Message) => {
-    setChats((prev) =>
-      prev.map((c) => {
-        if (c.id === msg.chatId) {
-          const exists = c.messages?.some((m) => m.id === msg.id);
-          return exists ? c : { ...c, messages: [...(c.messages || []), msg] };
-        }
-        return c;
-      })
-    );
-  };
+    const handleTyping = (data: { chatId: string; isTyping: boolean }) => {
+      setTypingByChat((prev) => ({ ...prev, [data.chatId]: data.isTyping }));
+    };
 
-  const handleTyping = (data: { chatId: string; isTyping: boolean }) => {
-    if (data.chatId === activeChatId) setIsTyping(data.isTyping);
-  };
+    const handleAiError = (data: { chatId: string; message: string }) => {
+      toast.error(data.message);
+    };
 
-  socket.on('receiveMessage', handleNewMsg);
-  socket.on('typingStatus', handleTyping);
+    socket.on('receiveMessage', handleNewMsg);
+    socket.on('typingStatus', handleTyping);
+    socket.on('aiError', handleAiError);
 
-  return () => {
-    socket.off('connect');
-    socket.off('connect_error');
-    socket.off('receiveMessage');
-    socket.off('typingStatus');
-  };
-}, [activeChatId, socket]);
+    return () => {
+      socket.off('receiveMessage', handleNewMsg);
+      socket.off('typingStatus', handleTyping);
+      socket.off('aiError', handleAiError);
+    };
+  }, [socket]);
 
   const sendMessage = async (text: string) => {
-    const userId = (session?.user as any)?.id;
-    if (!text.trim() || !userId) return;
+    if (!text.trim() || !token) return;
 
     let currentId = activeChatId;
 
     if (!currentId) {
       try {
-        const res = await fetch(API_URL, {
+        const res = await authFetch(API_URL, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId: Number(userId), title: text.slice(0, 30) }),
+          body: JSON.stringify({ title: text.slice(0, 30) }),
         });
         if (!res.ok) throw new Error();
         const newChat = await res.json();
@@ -107,14 +135,17 @@ const ChatLayout = () => {
     }
 
     try {
-      const res = await fetch(`${API_URL}/${currentId}/messages`, {
+      const res = await authFetch(`${API_URL}/${currentId}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'user', content: text }),
+        body: JSON.stringify({ content: text }), // role більше не надсилаємо
       });
+      if (res.status === 409) {
+        toast.error('Please wait for the current answer');
+        return;
+      }
       if (!res.ok) throw new Error();
       const savedMsg = await res.json();
-      
+
       setChats((prev) =>
         prev.map((c) =>
           c.id === currentId ? { ...c, messages: [...(c.messages || []), savedMsg] } : c
@@ -136,7 +167,7 @@ const ChatLayout = () => {
   const confirmDelete = async () => {
     if (!chatToDelete) return;
 
-    const deletePromise = fetch(`${API_URL}/${chatToDelete.id}`, {
+    const deletePromise = authFetch(`${API_URL}/${chatToDelete.id}`, {
       method: 'DELETE',
     }).then(async (res) => {
       if (!res.ok) throw new Error();
@@ -154,10 +185,11 @@ const ChatLayout = () => {
   };
 
   const activeChat = chats.find((c) => c.id === activeChatId) || { messages: [] };
+  const isTyping = !!typingByChat[activeChatId];
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-white dark:bg-black relative pt-16">
-      <button 
+      <button
         onClick={() => setIsSidebarOpen(!isSidebarOpen)}
         className="md:hidden fixed bottom-6 right-6 z-[100] bg-indigo-600 text-white p-4 rounded-full shadow-2xl active:scale-95 transition-all"
       >
@@ -170,8 +202,8 @@ const ChatLayout = () => {
         </svg>
       </button>
       <div className={`
-        fixed md:relative inset-y-0 left-0 z-[90] 
-        transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'} 
+        fixed md:relative inset-y-0 left-0 z-[90]
+        transform ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         md:translate-x-0 transition-transform duration-300 ease-in-out
         w-72 bg-white dark:bg-zinc-950
       `}>
@@ -181,12 +213,12 @@ const ChatLayout = () => {
           onSelect={(id) => { setActiveChatId(id); setIsSidebarOpen(false); }}
           onNewChat={() => { setActiveChatId(''); setIsSidebarOpen(false); }}
           onDeleteChat={openDeleteModal}
-          onRenameChat={() => {}} 
+          onRenameChat={() => {}}
         />
       </div>
       {isSidebarOpen && (
-        <div 
-          onClick={() => setIsSidebarOpen(false)} 
+        <div
+          onClick={() => setIsSidebarOpen(false)}
           className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[80] md:hidden"
         />
       )}

@@ -4,6 +4,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 export const authOptions: AuthOptions = {
   session: {
     strategy: 'jwt',
+    maxAge: 24 * 60 * 60, // 1 день, як і термін життя токена бекенду
   },
   providers: [
     CredentialsProvider({
@@ -27,8 +28,7 @@ export const authOptions: AuthOptions = {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ token }),
             });
-          } 
-          else {
+          } else {
             response = await fetch(`${apiUrl}/auth/login`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -36,20 +36,22 @@ export const authOptions: AuthOptions = {
             });
           }
 
-          const user = await response.json();
+          // Бекенд повертає { user: { id, name, email }, accessToken }
+          const data = await response.json();
 
-          if (!response.ok || user?.error) {
-            console.error("Auth error details:", user);
+          if (!response.ok || !data?.accessToken) {
+            console.error('Auth error details:', data);
             return null;
           }
 
           return {
-            id: String(user.id),
-            name: user.name,
-            email: user.email,
-          };
+            id: String(data.user.id),
+            name: data.user.name,
+            email: data.user.email,
+            accessToken: data.accessToken, // JWT бекенду
+          } as any;
         } catch (error) {
-          console.error("Connection error to Backend:", error);
+          console.error('Connection error to Backend:', error);
           return null;
         }
       },
@@ -57,27 +59,27 @@ export const authOptions: AuthOptions = {
   ],
   callbacks: {
     async jwt({ token, user }) {
+      // user є лише в момент входу
       if (user) {
         token.id = user.id;
+        token.accessToken = (user as any).accessToken;
       }
       return token;
     },
     async session({ session, token }: any) {
       if (session.user) {
         session.user.id = token.id;
-        session.accessToken = token.id;
       }
+      session.accessToken = token.accessToken;
       return session;
     },
   },
   pages: {
     signIn: '/',
-    error: '/', 
+    error: '/',
   },
   secret: process.env.NEXTAUTH_SECRET,
 };
 
 const handler = NextAuth(authOptions);
 export { handler as GET, handler as POST };
-
-
